@@ -39,6 +39,12 @@ volatile uint8_t should_send = 0;   //this gets set to 1 every 512us by an inter
                                     //It's polled/reset to 0 in loop()
 
 
+//relay variable
+#define RELAY  7 //pin number
+volatile uint16_t bufferempty[256];
+volatile int bufferempty_tot = 0;
+
+
 
 //-------------------------------------------------------------------------------
 //  INTERRUPT SERVICE ROUTINE (FANCY SPECIAL FUNCTION):
@@ -72,7 +78,7 @@ ISR(TIMER2_OVF_vect){           //When timer2 overflows,
 void request_data_if_ready(void){
                                 //(readpoint - loadpoint) == number of buffer addresses available.
                                 //Total number of buffer addresses is 256, and we take data in 256-byte blocks.
-                                //Our buffer addresses each require two bytes to fill.
+                                //Our buffer addresses each require two bytes to fill.                              
                              
   uint8_t buffer_locations_available = readpoint - loadpoint;                              
   if((loadpoint == readpoint) || ((buffer_locations_available >= 96) && ((buffer_locations_available % 16) == 0)) ){    
@@ -135,7 +141,8 @@ void load_data_if_available(void){      //Loads data, as long as there is data t
                                         //lowbyte (now 0x00CE) and shifted highbyte (0xFA00) to obtain 
                                         //0xFACE, a uint16_t we can store in databuffer[loadpoint].
     }
-  }
+  }  
+    
   if((buffer_locations_filled == 0) && (Serial.available() > 1)){ //if the buffer's completely empty, and there are at lest two bytes available...
     uint8_t highbyte = Serial.read();   //First we save the high byte, then
     uint8_t lowbyte = Serial.read();    //We save the low byte, and
@@ -146,7 +153,7 @@ void load_data_if_available(void){      //Loads data, as long as there is data t
       ((uint16_t)highbyte << 8)         
                                         
         | (uint16_t)lowbyte;            
-  }
+  }  
 }
 //-------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------
@@ -158,13 +165,14 @@ void load_data_if_available(void){      //Loads data, as long as there is data t
 //-------------------------------------------------------------------------------
 void output_data_if_ready(void){        //Outputs data, as long as:
   if(should_send == 1){                 //The timer2 overflow interrupt service routine says it's time
-                                        //to send data (it's been 512 microseconds, buddy, you gonna stand here all day?),
+                                        //to send data (it's been 512 microseconds, buddy, you gonna stand here all day?),    
     if((loadpoint - readpoint) != 0){   //and we actually have data to send. If we do,
       readpoint++;                      //move the pointer up one,
       DACwrite(databuffer[readpoint]);  //we output the 16 bits at the current location of the read pointer,
-      
+            
       should_send = 0;                  //and note that we shouldn't send more data until timer2 overflows again.
     }
+   
   }
 }
 //-------------------------------------------------------------------------------
@@ -177,11 +185,23 @@ void output_data_if_ready(void){        //Outputs data, as long as:
 //-------------------------------------------------------------------------------
 void DACwrite(uint16_t value){  //Why is this a separate function? So you can easily play with
                                 //the DAC without following my specific read/write/buffer protocol!
-                                                                
   digitalWrite(cs, LOW);        //pull *CS LOW ("Hey, DAC, listen! We're talking to you!")
   SPI.transfer16(value);        //write the value to the DAC
   digitalWrite(cs, HIGH);       //pull *CS HIGH ("DAC, we're done talking to you. Output the value we sent you.")
+
+  if (value <= 8901) {    # interference?
+    bufferempty_tot = bufferempty_tot + 1;
+  }
+
+  if (bufferempty_tot >= 2048) {
+    digitalWrite(RELAY, 1);      //OFF
+    bufferempty_tot = 0;
+  } else {
+    digitalWrite(RELAY, 0);      //ON
+  }
+
 }
+
 //-------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------
 
@@ -201,6 +221,9 @@ void setup(){                   //This function configures our timer, buffer, an
 //-------------------------------------------------------------------------------
   Serial.begin(115200);         //start serial at 115200 baud, no fancy stuff
 //-------------------------------------------------------------------------------  
+  
+  pinMode(RELAY, OUTPUT);//open relay pin
+
                                 //SPI setup steps:
   pinMode(cs, OUTPUT);          //we use this pin (D10) as an output for *CS ( * means active low) chip select pin
   SPI.begin();                  //start SPI
@@ -244,6 +267,7 @@ void loop(){                    //Loop forever:
                                 //request another 256 bytes.
 //-------------------------------------------------------------------------------
   load_data_if_available();     //If we have data coming in, load it into the buffer.
+
 }
 //-------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------
